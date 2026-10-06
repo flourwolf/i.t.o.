@@ -79,7 +79,7 @@ button.main { background: var(--thread); color: var(--on-thread); border-color: 
   <header class="head">
     <h1>ito</h1>
     <svg class="thread" viewBox="0 0 400 28" preserveAspectRatio="none" aria-hidden="true"><path d="M2 8 C 90 30, 160 -8, 250 14 S 370 22, 398 6"/><circle cx="2" cy="8" r="4"/><circle cx="398" cy="6" r="4"/></svg>
-    <p class="sub">数字を言わずに、お題の言葉だけで小さい順に並べるゲーム。ここでは配札とお題決めを行います。</p>
+    <p class="sub">数字を言わずに、お題の言葉だけで小さい順に並べるゲーム。</p>
   </header>
 
   <section id="lobby" class="wrap" style="gap:20px">
@@ -95,11 +95,11 @@ button.main { background: var(--thread); color: var(--on-thread); border-color: 
       </div>
       <div id="shareBox" style="display:flex;flex-direction:column;gap:12px">
         <div>
-          <label for="link">配布用URL（参加番号は未入力）</label>
+          <label for="link">配布用URL</label>
           <div class="row"><input type="text" id="link" readonly><button id="copyLink">コピー</button></div>
         </div>
         <div>
-          <label for="code">参加コード（URLが開けない環境用）</label>
+          <label for="code">参加コード</label>
           <div class="row"><input type="text" id="code" readonly><button id="copyCode">コピー</button></div>
         </div>
         <p class="note">URLを開いた人は人数とシード値が入力済みの状態になり、参加番号だけ選びます。</p>
@@ -114,25 +114,45 @@ button.main { background: var(--thread); color: var(--on-thread); border-color: 
     <div class="panel">
       <h2>自分の参加番号</h2>
       <div class="chips" id="chips"></div>
+      <div>
+        <label for="syncStart">同期ID（途中参加・復帰のときだけ入力）</label>
+        <input type="text" id="syncStart" placeholder="s1r1" autocomplete="off" spellcheck="false">
+        <p class="note" id="resumeNote" hidden>前回の続きの同期IDと参加番号を入力済みです。</p>
+        <p class="note" id="syncStartErr" hidden style="color:var(--thread)">「s1r1」のような同期IDを入力してください。</p>
+      </div>
       <button class="main" id="start" disabled>ゲーム開始</button>
     </div>
   </section>
 
   <section id="topicScr" class="wrap" hidden style="gap:16px">
-    <div class="head"><h2>お題を選ぶ</h2><p class="sub" id="topicSub">3つの候補です。全員で相談して、同じお題を選んでください。</p></div>
+    <div class="head"><h2>お題を選ぶ</h2><p class="sub" id="topicSub">全員で相談して、同じお題を選んでください。</p></div>
     <div class="topics" id="topics"></div>
     <button class="main" id="go" disabled>このお題で始める</button>
   </section>
 
   <section id="playScr" class="wrap" hidden style="gap:16px">
-    <div class="topic-now"><span class="lbl">お題 / ROUND <span id="roundOut">1</span></span><h2 id="topicNow"></h2></div>
+    <div class="topic-now"><span class="lbl">お題</span><h2 id="topicNow"></h2></div>
     <button class="hand" id="hand" aria-live="polite"></button>
     <div class="scale"><span>1 小さい</span><span>大きい 100</span></div>
-    <div class="meta"><span id="who"></span><span>他の人に見えない向きで確認</span></div>
+    <div class="meta"><span id="who"></span><span id="pile"></span></div>
     <div class="actions">
       <button id="next">次のラウンド</button>
+      <button id="shuffleNext">シャッフルして次のラウンド</button>
       <button id="reselect">お題を選び直す</button>
       <button id="leave">最初に戻る</button>
+    </div>
+    <p class="note" id="deckNote" hidden>山札が足りません。「シャッフルして次のラウンド」で捨て札を山札に戻してください。</p>
+    <div class="panel">
+      <div>
+        <label for="syncId">同期ID</label>
+        <div class="row"><input type="text" id="syncId" readonly><button id="copySync">コピー</button></div>
+      </div>
+      <div>
+        <label for="syncIn">同期IDを入力して合わせる</label>
+        <div class="row"><input type="text" id="syncIn" placeholder="s1r1" autocomplete="off" spellcheck="false"><button id="applySync">合わせる</button></div>
+        <p class="note" id="syncErr" hidden style="color:var(--thread)"></p>
+      </div>
+      <p class="note">自分の画面の同期IDが他の人と違うときは、他の人のIDを入力すると同じ配札にそろいます。</p>
     </div>
   </section>
 </main>
@@ -150,17 +170,32 @@ function mulberry32(a) {
 }
 function makeRng(s) { return mulberry32(xmur3(s)()); }
 
-// デッキ(1〜100)からランダムに1枚ずつ抜き(remove)、配布用リストへappendする。
-// 配布用リストは「抜いた順」のまま並べ、ソートしない。hands[参加番号-1] が各自の数字。
-function deal(n, seed, round) {
-  const rng = makeRng(seed + '|' + n + '|' + round + '|deal');
+// 状態は (e: シャッフル回数, k: その中のラウンド番号) の2つの数字だけで決まる。
+// 山札(deck) / 配布用(hands) / 捨て札(discard) の3リストは毎回ここから作り直すので、
+// 同期IDさえそろえば、途中参加・再読み込みの後でも全員が同じ状態になる。
+// 配布用は「抜いた順」のまま並べ、ソートしない。hands[参加番号-1] が各自の数字。
+function maxRound(n) { return Math.floor(100 / n) - 1; }
+function stateAt(n, seed, e, k) {
+  k = Math.max(0, Math.min(k, maxRound(n)));
+  const rng = makeRng(seed + '|' + n + '|s' + e + '|deal');
   const deck = Array.from({ length: 100 }, (_, i) => i + 1);
-  const hands = [];
-  for (let i = 0; i < n; i++) {
-    const k = Math.floor(rng() * deck.length);
-    hands.push(deck.splice(k, 1)[0]);
+  const hands = [], discard = [];
+  const deal = () => {
+    for (let i = 0; i < n; i++) hands.push(deck.splice(Math.floor(rng() * deck.length), 1)[0]);
+  };
+  deal();
+  for (let r = 0; r < k; r++) {
+    while (hands.length) discard.push(hands.shift());   // 配布用 → 捨て札
+    deal();                                             // 残りの山札から配り直す
   }
-  return hands;
+  return { n, e, k, deck, hands, discard, canNext: deck.length >= n };
+}
+// 同期ID: s{シャッフル回数+1}r{ラウンド+1}  例 s1r1
+function syncId(e, k) { return 's' + (e + 1) + 'r' + (k + 1); }
+function parseSync(str, n) {
+  const m = /^\s*s(\d+)r(\d+)\s*$/i.exec(str || '');
+  if (!m || +m[1] < 1 || +m[2] < 1) return null;
+  return { e: +m[1] - 1, k: Math.min(+m[2] - 1, maxRound(n)) };
 }
 function pickTopics(words, n, seed, round) {
   const rng = makeRng(seed + '|' + n + '|' + round + '|topic');
@@ -183,7 +218,7 @@ fetch('word.txt').then(r => r.ok ? r.text() : Promise.reject())
   .catch(() => {});
 
 const $ = s => document.querySelector(s);
-const S = { n: 4, seed: '', me: 0, round: 1, topics: [], chosen: -1, shown: false, locked: false };
+const S = { n: 4, seed: '', me: 0, e: 0, k: 0, topics: [], chosen: -1, shown: false, locked: false, game: null };
 
 function randSeed() {
   const c = 'abcdefghjkmnpqrstuvwxyz23456789'; let s = '';
@@ -211,7 +246,7 @@ function renderLobby() {
   $('#roomTitle').textContent = S.locked ? '部屋の設定（入力済み）' : '部屋を作る';
 }
 function openTopics() {
-  S.topics = pickTopics(words, S.n, S.seed, S.round); S.chosen = -1;
+  S.topics = pickTopics(words, S.n, S.seed, S.e + '.' + S.k); S.chosen = -1;
   $('#topics').innerHTML = '';
   S.topics.forEach((t, i) => {
     const b = document.createElement('button');
@@ -223,14 +258,18 @@ function openTopics() {
   $('#go').disabled = true; show('topicScr');
 }
 function renderHand() {
-  const v = deal(S.n, S.seed, S.round)[S.me - 1];
+  const v = S.game.hands[S.me - 1];
   $('#hand').innerHTML = S.shown ? '<span class="num">' + v + '</span>' : '<span class="hide"><b>？</b>タップして数字を見る</span>';
   $('#hand').setAttribute('aria-label', S.shown ? 'あなたの数字は' + v + '。タップで隠す' : 'タップして数字を見る');
 }
 function openPlay() {
   S.shown = false;
-  $('#topicNow').textContent = S.topics[S.chosen]; $('#roundOut').textContent = S.round;
+  $('#topicNow').textContent = S.topics[S.chosen];
   $('#who').textContent = '参加番号 ' + S.me + ' / ' + S.n + '人';
+  const g = S.game, ok = g.canNext;
+  $('#pile').textContent = '山札 ' + g.deck.length + ' ／ 捨て札 ' + g.discard.length;
+  $('#next').disabled = !ok; $('#deckNote').hidden = ok;
+  $('#syncId').value = syncId(S.e, S.k); $('#syncErr').hidden = true; $('#syncIn').value = '';
   renderHand(); show('playScr');
 }
 async function copy(inputId, btn) {
@@ -252,12 +291,30 @@ $('#loadCode').onclick = () => {
   if (!r) { $('#codeErr').textContent = '「人数-シード値」の形式で入力してください（例: 4-ab12cd）。人数は2〜12です。'; return; }
   S.n = r.n; S.seed = r.seed; $('#seed').value = r.seed; S.locked = true; renderLobby();
 };
-$('#start').onclick = () => { S.round = 1; openTopics(); };
+function refresh() {
+  S.game = stateAt(S.n, S.seed, S.e, S.k);
+  S.k = S.game.k;
+  try { localStorage.setItem('ito-save', JSON.stringify({ seed: S.seed, n: S.n, me: S.me, sync: syncId(S.e, S.k) })); } catch (e) {}
+}
+$('#start').onclick = () => {
+  const r = parseSync($('#syncStart').value, S.n);
+  if ($('#syncStart').value.trim() && !r) { $('#syncStartErr').hidden = false; return; }
+  $('#syncStartErr').hidden = true;
+  S.e = r ? r.e : 0; S.k = r ? r.k : 0; refresh(); openTopics();
+};
 $('#go').onclick = () => openPlay();
 $('#hand').onclick = () => { S.shown = !S.shown; renderHand(); };
-$('#next').onclick = () => { S.round++; openTopics(); };
-$('#reselect').onclick = () => { $('#topicSub').textContent = '同じ候補から選び直せます。'; const keep = S.topics; openTopics(); };
-$('#leave').onclick = () => { S.round = 1; show('lobby'); };
+$('#next').onclick = () => { if (S.game.canNext) { S.k++; refresh(); openTopics(); } };
+$('#shuffleNext').onclick = () => { S.e++; S.k = 0; refresh(); openTopics(); };
+$('#copySync').onclick = e => copy('#syncId', e.target);
+$('#applySync').onclick = () => {
+  const r = parseSync($('#syncIn').value, S.n);
+  if (!r) { $('#syncErr').textContent = '「s1r1」のような同期IDを入力してください。'; $('#syncErr').hidden = false; return; }
+  if (r.e === S.e && r.k === S.k) { $('#syncErr').textContent = 'すでにこの同期IDです。'; $('#syncErr').hidden = false; return; }
+  S.e = r.e; S.k = r.k; refresh(); openTopics();
+};
+$('#reselect').onclick = () => { $('#topicSub').textContent = '同じ候補から選び直せます。'; openTopics(); };
+$('#leave').onclick = () => { try { localStorage.removeItem('ito-save'); } catch (e) {} show('lobby'); };
 
 (function init() {
   const q = new URLSearchParams(location.search);
@@ -265,6 +322,13 @@ $('#leave').onclick = () => { S.round = 1; show('lobby'); };
   if (n >= 2 && n <= 12 && seed) { S.n = n; S.seed = seed; S.locked = true; }
   else S.seed = randSeed();
   $('#seed').value = S.seed;
+  try {
+    const sv = JSON.parse(localStorage.getItem('ito-save') || 'null');
+    if (sv && sv.seed === S.seed && sv.n === S.n && S.locked) {
+      S.me = sv.me <= S.n ? sv.me : 0; $('#syncStart').value = sv.sync;
+      $('#resumeNote').hidden = false;
+    }
+  } catch (e) {}
   renderLobby(); show('lobby');
 })();
 </script>
